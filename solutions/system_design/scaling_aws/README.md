@@ -1,403 +1,403 @@
-# Design a system that scales to millions of users on AWS
+# AWSで数百万人のユーザーにスケールするシステムを設計する
 
-*Note: This document links directly to relevant areas found in the [system design topics](https://github.com/donnemartin/system-design-primer#index-of-system-design-topics) to avoid duplication.  Refer to the linked content for general talking points, tradeoffs, and alternatives.*
+*注: このドキュメントは重複を避けるために[システム設計トピック](https://github.com/donnemartin/system-design-primer#index-of-system-design-topics)の関連部分に直接リンクしています。一般的な話題、トレードオフ、および代替案についてはリンク先の内容を参照してください。*
 
-## Step 1: Outline use cases and constraints
+## ステップ1: ユースケースと制約を概説する
 
-> Gather requirements and scope the problem.
-> Ask questions to clarify use cases and constraints.
-> Discuss assumptions.
+> 要件を収集し、問題の範囲を決定します。
+> ユースケースと制約を明確にするために質問をします。
+> 仮定について議論します。
 
-Without an interviewer to address clarifying questions, we'll define some use cases and constraints.
+面接官に明確化の質問をすることができない場合、いくつかのユースケースと制約を定義します。
 
-### Use cases
+### ユースケース
 
-Solving this problem takes an iterative approach of: 1) **Benchmark/Load Test**, 2) **Profile** for bottlenecks 3) address bottlenecks while evaluating alternatives and trade-offs, and 4) repeat, which is good pattern for evolving basic designs to scalable designs.
+この問題を解決するには、1) **ベンチマーク/負荷テスト**、2) ボトルネックの**プロファイル**、3) ボトルネックに対処しながら代替案とトレードオフを評価し、4) 繰り返すという反復的なアプローチが必要です。これは基本設計をスケーラブルな設計に進化させるための良いパターンです。
 
-Unless you have a background in AWS or are applying for a position that requires AWS knowledge, AWS-specific details are not a requirement.  However, **much of the principles discussed in this exercise can apply more generally outside of the AWS ecosystem.**
+AWSの背景があるか、AWSの知識が必要なポジションに応募している場合を除き、AWS固有の詳細は必須ではありません。ただし、この演習で議論される原則の多くはAWSエコシステム外でも一般的に適用できます。
 
-#### We'll scope the problem to handle only the following use cases
+#### 以下のユースケースに限定して問題の範囲を定義します
 
-* **User** makes a read or write request
-    * **Service** does processing, stores user data, then returns the results
-* **Service** needs to evolve from serving a small amount of users to millions of users
-    * Discuss general scaling patterns as we evolve an architecture to handle a large number of users and requests
-* **Service** has high availability
+* **ユーザー**が読み取りまたは書き込みリクエストを行う
+    * **サービス**が処理を行い、ユーザーデータを保存し、結果を返す
+* **サービス**が少数のユーザーから数百万人のユーザーに対応するように進化する必要がある
+    * 多数のユーザーとリクエストを処理するためにアーキテクチャを進化させる際の一般的なスケーリングパターンについて議論する
+* **サービス**が高可用性を持つ
 
-### Constraints and assumptions
+### 制約と仮定
 
-#### State assumptions
+#### 仮定を述べる
 
-* Traffic is not evenly distributed
-* Need for relational data
-* Scale from 1 user to tens of millions of users
-    * Denote increase of users as:
+* トラフィックは均等に分散されていない
+* リレーショナルデータが必要
+* 1ユーザーから数千万ユーザーにスケールする必要がある
+    * ユーザーの増加を次のように表す:
         * Users+
         * Users++
         * Users+++
         * ...
-    * 10 million users
-    * 1 billion writes per month
-    * 100 billion reads per month
-    * 100:1 read to write ratio
-    * 1 KB content per write
+    * 1000万ユーザー
+    * 月間10億回の書き込み
+    * 月間1000億回の読み取り
+    * 読み取りと書き込みの比率は100:1
+    * 書き込みごとに1KBのコンテンツ
 
-#### Calculate usage
+#### 使用量を計算する
 
-**Clarify with your interviewer if you should run back-of-the-envelope usage calculations.**
+**面接官にバックオブエンベロープの使用量計算を行うべきか確認してください。**
 
-* 1 TB of new content per month
-    * 1 KB per write * 1 billion writes per month
-    * 36 TB of new content in 3 years
-    * Assume most writes are from new content instead of updates to existing ones
-* 400 writes per second on average
-* 40,000 reads per second on average
+* 月間1TBの新しいコンテンツ
+    * 書き込みごとに1KB * 月間10億回の書き込み
+    * 3年間で36TBの新しいコンテンツ
+    * ほとんどの書き込みは既存のコンテンツの更新ではなく新しいコンテンツからのものであると仮定
+* 平均で毎秒400回の書き込み
+* 平均で毎秒40,000回の読み取り
 
-Handy conversion guide:
+便利な変換ガイド:
 
-* 2.5 million seconds per month
-* 1 request per second = 2.5 million requests per month
-* 40 requests per second = 100 million requests per month
-* 400 requests per second = 1 billion requests per month
+* 月間250万秒
+* 毎秒1リクエスト = 月間250万リクエスト
+* 毎秒40リクエスト = 月間1億リクエスト
+* 毎秒400リクエスト = 月間10億リクエスト
 
-## Step 2: Create a high level design
+## ステップ2: 高レベルの設計を作成する
 
-> Outline a high level design with all important components.
+> 重要なコンポーネントをすべて含む高レベルの設計を概説します。
 
 ![Imgur](http://i.imgur.com/B8LDKD7.png)
 
-## Step 3: Design core components
+## ステップ3: コアコンポーネントを設計する
 
-> Dive into details for each core component.
+> 各コアコンポーネントの詳細に入ります。
 
-### Use case: User makes a read or write request
+### ユースケース: ユーザーが読み取りまたは書き込みリクエストを行う
 
-#### Goals
+#### 目標
 
-* With only 1-2 users, you only need a basic setup
-    * Single box for simplicity
-    * Vertical scaling when needed
-    * Monitor to determine bottlenecks
+* ユーザーが1〜2人しかいない場合、基本的なセットアップのみが必要
+    * 単一のボックスでシンプルに
+    * 必要に応じて垂直スケーリング
+    * ボトルネックを特定するために監視
 
-#### Start with a single box
+#### 単一のボックスから始める
 
-* **Web server** on EC2
-    * Storage for user data
-    * [**MySQL Database**](https://github.com/donnemartin/system-design-primer#relational-database-management-system-rdbms)
+* **EC2上のWebサーバー**
+    * ユーザーデータのストレージ
+    * [**MySQLデータベース**](https://github.com/donnemartin/system-design-primer#relational-database-management-system-rdbms)
 
-Use **Vertical Scaling**:
+**垂直スケーリング**を使用:
 
-* Simply choose a bigger box
-* Keep an eye on metrics to determine how to scale up
-    * Use basic monitoring to determine bottlenecks: CPU, memory, IO, network, etc
-    * CloudWatch, top, nagios, statsd, graphite, etc
-* Scaling vertically can get very expensive
-* No redundancy/failover
+* 単に大きなボックスを選ぶ
+* スケールアップの方法を決定するためにメトリクスを監視
+    * ボトルネックを特定するために基本的な監視を使用: CPU、メモリ、IO、ネットワークなど
+    * CloudWatch、top、nagios、statsd、graphiteなど
+* 垂直スケーリングは非常に高価になる可能性がある
+* 冗長性/フェイルオーバーがない
 
-*Trade-offs, alternatives, and additional details:*
+*トレードオフ、代替案、および追加の詳細:*
 
-* The alternative to **Vertical Scaling** is [**Horizontal scaling**](https://github.com/donnemartin/system-design-primer#horizontal-scaling)
+* **垂直スケーリング**の代替案は[**水平スケーリング**](https://github.com/donnemartin/system-design-primer#horizontal-scaling)
 
-#### Start with SQL, consider NoSQL
+#### SQLから始めて、NoSQLを検討する
 
-The constraints assume there is a need for relational data.  We can start off using a **MySQL Database** on the single box.
+制約はリレーショナルデータが必要であることを仮定しています。単一のボックスで**MySQLデータベース**を使用して開始できます。
 
-*Trade-offs, alternatives, and additional details:*
+*トレードオフ、代替案、および追加の詳細:*
 
-* See the [Relational database management system (RDBMS)](https://github.com/donnemartin/system-design-primer#relational-database-management-system-rdbms) section
-* Discuss reasons to use [SQL or NoSQL](https://github.com/donnemartin/system-design-primer#sql-or-nosql)
+* [リレーショナルデータベース管理システム (RDBMS)](https://github.com/donnemartin/system-design-primer#relational-database-management-system-rdbms)セクションを参照
+* [SQLまたはNoSQL](https://github.com/donnemartin/system-design-primer#sql-or-nosql)を使用する理由について議論する
 
-#### Assign a public static IP
+#### 公開静的IPを割り当てる
 
-* Elastic IPs provide a public endpoint whose IP doesn't change on reboot
-* Helps with failover, just point the domain to a new IP
+* Elastic IPは再起動時にIPが変わらない公開エンドポイントを提供
+* フェイルオーバーに役立ち、ドメインを新しいIPにポイントするだけで済む
 
-#### Use a DNS
+#### DNSを使用する
 
-Add a **DNS** such as Route 53 to map the domain to the instance's public IP.
+インスタンスの公開IPにドメインをマップするためにRoute 53などの**DNS**を追加します。
 
-*Trade-offs, alternatives, and additional details:*
+*トレードオフ、代替案、および追加の詳細:*
 
-* See the [Domain name system](https://github.com/donnemartin/system-design-primer#domain-name-system) section
+* [ドメインネームシステム](https://github.com/donnemartin/system-design-primer#domain-name-system)セクションを参照
 
-#### Secure the web server
+#### Webサーバーを保護する
 
-* Open up only necessary ports
-    * Allow the web server to respond to incoming requests from:
-        * 80 for HTTP
-        * 443 for HTTPS
-        * 22 for SSH to only whitelisted IPs
-    * Prevent the web server from initiating outbound connections
+* 必要なポートのみを開放する
+    * Webサーバーが応答する必要がある受信リクエスト:
+        * HTTP用の80
+        * HTTPS用の443
+        * ホワイトリストに登録されたIPのみのSSH用の22
+    * Webサーバーが外部への接続を開始するのを防ぐ
 
-*Trade-offs, alternatives, and additional details:*
+*トレードオフ、代替案、および追加の詳細:*
 
-* See the [Security](https://github.com/donnemartin/system-design-primer#security) section
+* [セキュリティ](https://github.com/donnemartin/system-design-primer#security)セクションを参照
 
-## Step 4: Scale the design
+## ステップ4: 設計をスケールする
 
-> Identify and address bottlenecks, given the constraints.
+> 制約を考慮してボトルネックを特定し、対処します。
 
 ### Users+
 
 ![Imgur](http://i.imgur.com/rrfjMXB.png)
 
-#### Assumptions
+#### 仮定
 
-Our user count is starting to pick up and the load is increasing on our single box.  Our **Benchmarks/Load Tests** and **Profiling** are pointing to the **MySQL Database** taking up more and more memory and CPU resources, while the user content is filling up disk space.
+ユーザー数が増加し、単一のボックスの負荷が増加しています。**ベンチマーク/負荷テスト**と**プロファイリング**により、**MySQLデータベース**がますます多くのメモリとCPUリソースを消費し、ユーザーコンテンツがディスクスペースを埋めていることが示されています。
 
-We've been able to address these issues with **Vertical Scaling** so far.  Unfortunately, this has become quite expensive and it doesn't allow for independent scaling of the **MySQL Database** and **Web Server**.
+これまで**垂直スケーリング**でこれらの問題に対処してきましたが、非常に高価になり、**MySQLデータベース**と**Webサーバー**の独立したスケーリングができません。
 
-#### Goals
+#### 目標
 
-* Lighten load on the single box and allow for independent scaling
-    * Store static content separately in an **Object Store**
-    * Move the **MySQL Database** to a separate box
-* Disadvantages
-    * These changes would increase complexity and would require changes to the **Web Server** to point to the **Object Store** and the **MySQL Database**
-    * Additional security measures must be taken to secure the new components
-    * AWS costs could also increase, but should be weighed with the costs of managing similar systems on your own
+* 単一のボックスの負荷を軽減し、独立したスケーリングを可能にする
+    * 静的コンテンツを**オブジェクトストア**に別々に保存する
+    * **MySQLデータベース**を別のボックスに移動する
+* 欠点
+    * これらの変更は複雑さを増し、**Webサーバー**を**オブジェクトストア**および**MySQLデータベース**にポイントするように変更する必要がある
+    * 新しいコンポーネントを保護するために追加のセキュリティ対策が必要
+    * AWSのコストも増加する可能性があるが、同様のシステムを自分で管理するコストと比較する必要がある
 
-#### Store static content separately
+#### 静的コンテンツを別々に保存する
 
-* Consider using a managed **Object Store** like S3 to store static content
-    * Highly scalable and reliable
-    * Server side encryption
-* Move static content to S3
-    * User files
+* 静的コンテンツを保存するためにS3のような管理された**オブジェクトストア**を使用することを検討する
+    * 非常にスケーラブルで信頼性が高い
+    * サーバーサイド暗号化
+* 静的コンテンツをS3に移動する
+    * ユーザーファイル
     * JS
     * CSS
-    * Images
-    * Videos
+    * 画像
+    * ビデオ
 
-#### Move the MySQL database to a separate box
+#### MySQLデータベースを別のボックスに移動する
 
-* Consider using a service like RDS to manage the **MySQL Database**
-    * Simple to administer, scale
-    * Multiple availability zones
-    * Encryption at rest
+* **MySQLデータベース**を管理するためにRDSのようなサービスを使用することを検討する
+    * 管理が簡単でスケールしやすい
+    * 複数の可用性ゾーン
+    * 保存時の暗号化
 
-#### Secure the system
+#### システムを保護する
 
-* Encrypt data in transit and at rest
-* Use a Virtual Private Cloud
-    * Create a public subnet for the single **Web Server** so it can send and receive traffic from the internet
-    * Create a private subnet for everything else, preventing outside access
-    * Only open ports from whitelisted IPs for each component
-* These same patterns should be implemented for new components in the remainder of the exercise
+* データを転送中および保存時に暗号化する
+* 仮想プライベートクラウドを使用する
+    * インターネットからのトラフィックを送受信できるように単一の**Webサーバー**用のパブリックサブネットを作成する
+    * 他のすべてのもののためにプライベートサブネットを作成し、外部アクセスを防ぐ
+    * 各コンポーネントのホワイトリストに登録されたIPからのみポートを開放する
+* これらの同じパターンは、演習の残りの新しいコンポーネントにも実装する必要がある
 
-*Trade-offs, alternatives, and additional details:*
+*トレードオフ、代替案、および追加の詳細:*
 
-* See the [Security](https://github.com/donnemartin/system-design-primer#security) section
+* [セキュリティ](https://github.com/donnemartin/system-design-primer#security)セクションを参照
 
 ### Users++
 
 ![Imgur](http://i.imgur.com/raoFTXM.png)
 
-#### Assumptions
+#### 仮定
 
-Our **Benchmarks/Load Tests** and **Profiling** show that our single **Web Server** bottlenecks during peak hours, resulting in slow responses and in some cases, downtime.  As the service matures, we'd also like to move towards higher availability and redundancy.
+**ベンチマーク/負荷テスト**と**プロファイリング**により、ピーク時に単一の**Webサーバー**がボトルネックとなり、応答が遅くなり、場合によってはダウンタイムが発生することが示されています。サービスが成熟するにつれて、より高い可用性と冗長性に��かって進みたいと考えています。
 
-#### Goals
+#### 目標
 
-* The following goals attempt to address the scaling issues with the **Web Server**
-    * Based on the **Benchmarks/Load Tests** and **Profiling**, you might only need to implement one or two of these techniques
-* Use [**Horizontal Scaling**](https://github.com/donnemartin/system-design-primer#horizontal-scaling) to handle increasing loads and to address single points of failure
-    * Add a [**Load Balancer**](https://github.com/donnemartin/system-design-primer#load-balancer) such as Amazon's ELB or HAProxy
-        * ELB is highly available
-        * If you are configuring your own **Load Balancer**, setting up multiple servers in [active-active](https://github.com/donnemartin/system-design-primer#active-active) or [active-passive](https://github.com/donnemartin/system-design-primer#active-passive) in multiple availability zones will improve availability
-        * Terminate SSL on the **Load Balancer** to reduce computational load on backend servers and to simplify certificate administration
-    * Use multiple **Web Servers** spread out over multiple availability zones
-    * Use multiple **MySQL** instances in [**Master-Slave Failover**](https://github.com/donnemartin/system-design-primer#master-slave-replication) mode across multiple availability zones to improve redundancy
-* Separate out the **Web Servers** from the [**Application Servers**](https://github.com/donnemartin/system-design-primer#application-layer)
-    * Scale and configure both layers independently
-    * **Web Servers** can run as a [**Reverse Proxy**](https://github.com/donnemartin/system-design-primer#reverse-proxy-web-server)
-    * For example, you can add **Application Servers** handling **Read APIs** while others handle **Write APIs**
-* Move static (and some dynamic) content to a [**Content Delivery Network (CDN)**](https://github.com/donnemartin/system-design-primer#content-delivery-network) such as CloudFront to reduce load and latency
+* 次の目標は**Webサーバー**のスケーリング問題に対処することを目的としています
+    * **ベンチマーク/負荷テスト**と**プロファイリング**に基づいて、これらの技術のうち1つまたは2つだけを実装する必要があるかもしれません
+* 増加する負荷に対応し、単一障害点に対処するために[**水平スケーリング**](https://github.com/donnemartin/system-design-primer#horizontal-scaling)を使用する
+    * AmazonのELBやHAProxyなどの[**ロードバランサー**](https://github.com/donnemartin/system-design-primer#load-balancer)を追加する
+        * ELBは高可用性
+        * 自分で**ロードバランサー**を設定する場合、複数の可用性ゾーンで[アクティブ-アクティブ](https://github.com/donnemartin/system-design-primer#active-active)または[アクティブ-パッシブ](https://github.com/donnemartin/system-design-primer#active-passive)の複数のサーバーを設定すると可用性が向上します
+        * SSLを**ロードバランサー**で終了させることで、バックエンドサーバーの計算負荷を軽減し、証明書管理を簡素化します
+    * 複数の**Webサーバー**を複数の可用性ゾーンに分散して使用する
+    * 複数の**MySQL**インスタンスを複数の可用性ゾーンにわたる[**マスター-スレーブフェイルオーバー**](https://github.com/donnemartin/system-design-primer#master-slave-replication)モードで使用して冗長性を向上させる
+* **Webサーバー**を[**アプリケーションサーバー**](https://github.com/donnemartin/system-design-primer#application-layer)から分離する
+    * 両方のレイヤーを独立してスケールおよび構成する
+    * **Webサーバー**は[**リバースプロキシ**](https://github.com/donnemartin/system-design-primer#reverse-proxy-web-server)として動作できます
+    * 例えば、**Read API**を処理する**アプリケーションサーバー**を追加し、他の**Write API**を処理することができます
+* 静的（および一部の動的）コンテンツをCloudFrontなどの[**コンテンツデリバリネットワーク（CDN）**](https://github.com/donnemartin/system-design-primer#content-delivery-network)に移動して負荷と遅延を減らす
 
-*Trade-offs, alternatives, and additional details:*
+*トレードオフ、代替案、および追加の詳細:*
 
-* See the linked content above for details
+* 詳細については上記のリンク先を参照してください
 
 ### Users+++
 
 ![Imgur](http://i.imgur.com/OZCxJr0.png)
 
-**Note:** **Internal Load Balancers** not shown to reduce clutter
+**注:** **内部ロードバランサー**は混乱を避けるために表示されていません
 
-#### Assumptions
+#### 仮定
 
-Our **Benchmarks/Load Tests** and **Profiling** show that we are read-heavy (100:1 with writes) and our database is suffering from poor performance from the high read requests.
+**ベンチマーク/負荷テスト**と**プロファイリング**により、読み取りが多く（書き込みに対して100:1）データベースが高い読み取り要求によるパフォーマンスの低下に苦しんでいることが示されています。
 
-#### Goals
+#### 目標
 
-* The following goals attempt to address the scaling issues with the **MySQL Database**
-    * Based on the **Benchmarks/Load Tests** and **Profiling**, you might only need to implement one or two of these techniques
-* Move the following data to a [**Memory Cache**](https://github.com/donnemartin/system-design-primer#cache) such as Elasticache to reduce load and latency:
-    * Frequently accessed content from **MySQL**
-        * First, try to configure the **MySQL Database** cache to see if that is sufficient to relieve the bottleneck before implementing a **Memory Cache**
-    * Session data from the **Web Servers**
-        * The **Web Servers** become stateless, allowing for **Autoscaling**
-    * Reading 1 MB sequentially from memory takes about 250 microseconds, while reading from SSD takes 4x and from disk takes 80x longer.<sup><a href=https://github.com/donnemartin/system-design-primer#latency-numbers-every-programmer-should-know>1</a></sup>
-* Add [**MySQL Read Replicas**](https://github.com/donnemartin/system-design-primer#master-slave-replication) to reduce load on the write master
-* Add more **Web Servers** and **Application Servers** to improve responsiveness
+* 次の目標は**MySQLデータベース**のスケーリング問題に対処することを目的としています
+    * **ベンチマーク/負荷テスト**と**プロファイリング**に基づいて、これらの技術のうち1つまたは2つだけを実装する必要があるかもしれません
+* 負荷と遅延を減らすために、次のデータをElasticacheなどの[**メモリキャッシュ**](https://github.com/donnemartin/system-design-primer#cache)に移動する:
+    * **MySQL**から頻繁にアクセスされるコンテンツ
+        * 最初に**MySQLデータベース**キャッシュを構成して、それがボトルネックを解消するのに十分かどうかを確認してから**メモリキャッシュ**を実装する
+    * **Webサーバー**からのセッションデータ
+        * **Webサーバー**がステートレスになり、**オートスケーリング**が可能になる
+    * メモリから1MBを順次読み取るのに約250マイクロ秒かかりますが、SSDからの読み取りは4倍、ディスクからの読み取りは80倍長くかかります。<sup><a href=https://github.com/donnemartin/system-design-primer#latency-numbers-every-programmer-should-know>1</a></sup>
+* 書き込みマスターの負荷を軽減するために[**MySQLリードレプリカ**](https://github.com/donnemartin/system-design-primer#master-slave-replication)を追加する
+* 応答性を向上させるために、より多くの**Webサーバー**および**アプリケーションサーバー**を追加する
 
-*Trade-offs, alternatives, and additional details:*
+*トレードオフ、代替案、および追加の詳細:*
 
-* See the linked content above for details
+* 詳細については上記のリンク先を参照してください
 
-#### Add MySQL read replicas
+#### MySQLリードレプリカを追加する
 
-* In addition to adding and scaling a **Memory Cache**, **MySQL Read Replicas** can also help relieve load on the **MySQL Write Master**
-* Add logic to **Web Server** to separate out writes and reads
-* Add **Load Balancers** in front of **MySQL Read Replicas** (not pictured to reduce clutter)
-* Most services are read-heavy vs write-heavy
+* **メモリキャッシュ**を追加およびスケーリングすることに加えて、**MySQLリードレプリカ**も**MySQL書き込みマスター**の負荷を軽減するのに役立ちます
+* 書き込みと読み取りを分離するためのロジックを**Webサーバー**に追加する
+* **MySQLリードレプリカ**の前に**ロードバランサー**を追加する（混乱を避けるために表示されていません）
+* ほとんどのサービスは書き込みよりも読み取りが多い
 
-*Trade-offs, alternatives, and additional details:*
+*トレードオフ、代替案、および追加の詳細:*
 
-* See the [Relational database management system (RDBMS)](https://github.com/donnemartin/system-design-primer#relational-database-management-system-rdbms) section
+* [リレーショナルデータベース管理システム (RDBMS)](https://github.com/donnemartin/system-design-primer#relational-database-management-system-rdbms)セクションを参照
 
 ### Users++++
 
 ![Imgur](http://i.imgur.com/3X8nmdL.png)
 
-#### Assumptions
+#### 仮定
 
-Our **Benchmarks/Load Tests** and **Profiling** show that our traffic spikes during regular business hours in the U.S. and drop significantly when users leave the office.  We think we can cut costs by automatically spinning up and down servers based on actual load.  We're a small shop so we'd like to automate as much of the DevOps as possible for **Autoscaling** and for the general operations.
+**ベンチマーク/負荷テスト**と**プロファイリング**により、米国の通常の営業時間中にトラフィックが急増し、ユーザーがオフィスを離れると大幅に減少することが示されています。実際の負荷に基づいてサーバーを自動的にスピンアップおよびスピンダウンすることでコストを削減できると考えています。私たちは小さなショップなので、**オートスケーリング**および一般的な運用のためにできるだけ多くのDevOpsを自動化したいと考えています。
 
-#### Goals
+#### 目標
 
-* Add **Autoscaling** to provision capacity as needed
-    * Keep up with traffic spikes
-    * Reduce costs by powering down unused instances
-* Automate DevOps
-    * Chef, Puppet, Ansible, etc
-* Continue monitoring metrics to address bottlenecks
-    * **Host level** - Review a single EC2 instance
-    * **Aggregate level** - Review load balancer stats
-    * **Log analysis** - CloudWatch, CloudTrail, Loggly, Splunk, Sumo
-    * **External site performance** - Pingdom or New Relic
-    * **Handle notifications and incidents** - PagerDuty
-    * **Error Reporting** - Sentry
+* 必要に応じて容量をプロビジョニングするために**オートスケーリング**を追加する
+    * トラフィックの急増に対応する
+    * 使用されていないインスタンスの電源を切ることでコストを削減する
+* DevOpsを自動化する
+    * Chef、Puppet、Ansibleなど
+* ボトルネックに対処するためにメトリクスの監視を続ける
+    * **ホストレベル** - 単一のEC2インスタンスをレビューする
+    * **集計レベル** - ロードバランサーの統計をレビューする
+    * **ログ分析** - CloudWatch、CloudTrail、Loggly、Splunk、Sumo
+    * **外部サイトのパフォーマンス** - PingdomまたはNew Relic
+    * **通知とインシデントの処理** - PagerDuty
+    * **エラーレポート** - Sentry
 
-#### Add autoscaling
+#### オートスケーリングを追加する
 
-* Consider a managed service such as AWS **Autoscaling**
-    * Create one group for each **Web Server** and one for each **Application Server** type, place each group in multiple availability zones
-    * Set a min and max number of instances
-    * Trigger to scale up and down through CloudWatch
-        * Simple time of day metric for predictable loads or
-        * Metrics over a time period:
-            * CPU load
-            * Latency
-            * Network traffic
-            * Custom metric
-    * Disadvantages
-        * Autoscaling can introduce complexity
-        * It could take some time before a system appropriately scales up to meet increased demand, or to scale down when demand drops
+* AWSの**オートスケーリング**などの管理サービスを検討する
+    * 各**Webサーバー**および各**アプリケーションサーバー**タイプごとに1つのグループを作成し、各グループを複数の可用性ゾーンに配置する
+    * インスタンスの最小数と最大数を設定する
+    * CloudWatchを通じてスケールアップおよびスケールダウンをトリガーする
+        * 予測可能な負荷のための単純な時間帯メトリックまたは
+        * 一定期間のメトリック:
+            * CPU負荷
+            * レイテンシ
+            * ネットワークトラフィック
+            * カスタムメトリック
+    * 欠点
+        * オートスケーリングは複雑さを増す可能性がある
+        * システムが増加した需要に対応するために適切にスケールアップするまで、または需要が減少したときにスケールダウンするまでに時間がかかる場合があります
 
 ### Users+++++
 
 ![Imgur](http://i.imgur.com/jj3A5N8.png)
 
-**Note:** **Autoscaling** groups not shown to reduce clutter
+**注:** 混乱を避けるために**オートスケーリング**グループは表示されていません
 
-#### Assumptions
+#### 仮定
 
-As the service continues to grow towards the figures outlined in the constraints, we iteratively run **Benchmarks/Load Tests** and **Profiling** to uncover and address new bottlenecks.
+サービスが制約で概説された数値に向かって成長し続けるにつれて、新しいボトルネックを発見し対処するために**ベンチマーク/負荷テスト**と**プロファイリング**を反復的に実行します。
 
-#### Goals
+#### 目標
 
-We'll continue to address scaling issues due to the problem's constraints:
+問題の制約によるスケーリング問題に対処し続けます:
 
-* If our **MySQL Database** starts to grow too large, we might consider only storing a limited time period of data in the database, while storing the rest in a data warehouse such as Redshift
-    * A data warehouse such as Redshift can comfortably handle the constraint of 1 TB of new content per month
-* With 40,000 average read requests per second, read traffic for popular content can be addressed by scaling the **Memory Cache**, which is also useful for handling the unevenly distributed traffic and traffic spikes
-    * The **SQL Read Replicas** might have trouble handling the cache misses, we'll probably need to employ additional SQL scaling patterns
-* 400 average writes per second (with presumably significantly higher peaks) might be tough for a single **SQL Write Master-Slave**, also pointing to a need for additional scaling techniques
+* **MySQLデータベース**が大きくなりすぎる場合、データベースに限定された期間のデータのみを保存し、残りをRedshiftなどのデータウェアハウスに保存することを検討するかもしれません
+    * Redshiftのようなデータウェアハウスは、月間1TBの新しいコンテンツの制約を快適に処理できます
+* 平均で毎秒40,000回の読み取り要求があるため、人気のあるコンテンツの読み取りトラフィックは**メモリキャッシュ**をスケーリングすることで対処でき、不均等に分散されたトラフィックやトラフィックの急増にも対応できます
+    * **SQLリードレプリカ**はキャッシュミスの処理に苦労する可能性があり、追加のSQLスケーリングパターンを採用する必要があるかもしれません
+* 平均で毎秒400回の書き込み（おそらくピーク時にはそれ以上）が単一の**SQL書き込みマスター-スレーブ**にとって厳しいかもしれず、追加のスケーリング技術が必要になることを示しています
 
-SQL scaling patterns include:
+SQLスケーリングパターンには次のものがあります:
 
-* [Federation](https://github.com/donnemartin/system-design-primer#federation)
-* [Sharding](https://github.com/donnemartin/system-design-primer#sharding)
-* [Denormalization](https://github.com/donnemartin/system-design-primer#denormalization)
-* [SQL Tuning](https://github.com/donnemartin/system-design-primer#sql-tuning)
+* [フェデレーション](https://github.com/donnemartin/system-design-primer#federation)
+* [シャーディング](https://github.com/donnemartin/system-design-primer#sharding)
+* [非正規化](https://github.com/donnemartin/system-design-primer#denormalization)
+* [SQLチューニング](https://github.com/donnemartin/system-design-primer#sql-tuning)
 
-To further address the high read and write requests, we should also consider moving appropriate data to a [**NoSQL Database**](https://github.com/donnemartin/system-design-primer#nosql) such as DynamoDB.
+高い読み取りおよび書き込み要求にさらに対処するために、DynamoDBなどの[**NoSQLデータベース**](https://github.com/donnemartin/system-design-primer#nosql)に適切なデータを移動することも検討する必要があります。
 
-We can further separate out our [**Application Servers**](https://github.com/donnemartin/system-design-primer#application-layer) to allow for independent scaling.  Batch processes or computations that do not need to be done in real-time can be done [**Asynchronously**](https://github.com/donnemartin/system-design-primer#asynchronism) with **Queues** and **Workers**:
+[**アプリケーションサーバー**](https://github.com/donnemartin/system-design-primer#application-layer)をさらに分離して独立したスケーリングを可能にすることができます。リアルタイムで行う必要のないバッチ処理や計算は、**キュー**と**ワーカー**を使用して[**非同期**](https://github.com/donnemartin/system-design-primer#asynchronism)に行うことができます:
 
-* For example, in a photo service, the photo upload and the thumbnail creation can be separated:
-    * **Client** uploads photo
-    * **Application Server** puts a job in a **Queue** such as SQS
-    * The **Worker Service** on EC2 or Lambda pulls work off the **Queue** then:
-        * Creates a thumbnail
-        * Updates a **Database**
-        * Stores the thumbnail in the **Object Store**
+* 例えば、写真サービスでは、写真のアップロードとサムネイルの作成を分離できます:
+    * **クライアント**が写真をアップロードする
+    * **アプリケーションサーバー**がSQSなどの**キュー**にジョブを入れる
+    * EC2またはLambda上の**ワーカーサービス**が**キュー**から作業を引き出し、その後:
+        * サムネイルを作成する
+        * **データベース**を更新する
+        * サムネイルを**オブジェクトストア**に保存する
 
-*Trade-offs, alternatives, and additional details:*
+*トレードオフ、代替案、および追加の詳細:*
 
-* See the linked content above for details
+* 詳細については上記のリンク先を参照してください
 
-## Additional talking points
+## 追加の話題
 
-> Additional topics to dive into, depending on the problem scope and time remaining.
+> 問題の範囲と残り時間に応じて、掘り下げる追加のトピック。
 
-### SQL scaling patterns
+### SQLスケーリングパターン
 
-* [Read replicas](https://github.com/donnemartin/system-design-primer#master-slave-replication)
-* [Federation](https://github.com/donnemartin/system-design-primer#federation)
-* [Sharding](https://github.com/donnemartin/system-design-primer#sharding)
-* [Denormalization](https://github.com/donnemartin/system-design-primer#denormalization)
-* [SQL Tuning](https://github.com/donnemartin/system-design-primer#sql-tuning)
+* [リードレプリカ](https://github.com/donnemartin/system-design-primer#master-slave-replication)
+* [フェデレーション](https://github.com/donnemartin/system-design-primer#federation)
+* [シャーディング](https://github.com/donnemartin/system-design-primer#sharding)
+* [非正規化](https://github.com/donnemartin/system-design-primer#denormalization)
+* [SQLチューニング](https://github.com/donnemartin/system-design-primer#sql-tuning)
 
 #### NoSQL
 
-* [Key-value store](https://github.com/donnemartin/system-design-primer#key-value-store)
-* [Document store](https://github.com/donnemartin/system-design-primer#document-store)
-* [Wide column store](https://github.com/donnemartin/system-design-primer#wide-column-store)
-* [Graph database](https://github.com/donnemartin/system-design-primer#graph-database)
-* [SQL vs NoSQL](https://github.com/donnemartin/system-design-primer#sql-or-nosql)
+* [キー-バリューストア](https://github.com/donnemartin/system-design-primer#key-value-store)
+* [ドキュメントストア](https://github.com/donnemartin/system-design-primer#document-store)
+* [ワイドカラムストア](https://github.com/donnemartin/system-design-primer#wide-column-store)
+* [グラフデータベース](https://github.com/donnemartin/system-design-primer#graph-database)
+* [SQL対NoSQL](https://github.com/donnemartin/system-design-primer#sql-or-nosql)
 
-### Caching
+### キャッシュ
 
-* Where to cache
-    * [Client caching](https://github.com/donnemartin/system-design-primer#client-caching)
-    * [CDN caching](https://github.com/donnemartin/system-design-primer#cdn-caching)
-    * [Web server caching](https://github.com/donnemartin/system-design-primer#web-server-caching)
-    * [Database caching](https://github.com/donnemartin/system-design-primer#database-caching)
-    * [Application caching](https://github.com/donnemartin/system-design-primer#application-caching)
-* What to cache
-    * [Caching at the database query level](https://github.com/donnemartin/system-design-primer#caching-at-the-database-query-level)
-    * [Caching at the object level](https://github.com/donnemartin/system-design-primer#caching-at-the-object-level)
-* When to update the cache
-    * [Cache-aside](https://github.com/donnemartin/system-design-primer#cache-aside)
-    * [Write-through](https://github.com/donnemartin/system-design-primer#write-through)
-    * [Write-behind (write-back)](https://github.com/donnemartin/system-design-primer#write-behind-write-back)
-    * [Refresh ahead](https://github.com/donnemartin/system-design-primer#refresh-ahead)
+* どこにキャッシュするか
+    * [クライアントキャッシュ](https://github.com/donnemartin/system-design-primer#client-caching)
+    * [CDNキャッシュ](https://github.com/donnemartin/system-design-primer#cdn-caching)
+    * [Webサーバーキャッシュ](https://github.com/donnemartin/system-design-primer#web-server-caching)
+    * [データベースキャッシュ](https://github.com/donnemartin/system-design-primer#database-caching)
+    * [アプリケーションキャッシュ](https://github.com/donnemartin/system-design-primer#application-caching)
+* 何をキャッシュするか
+    * [データベースクエリレベルでのキャッシュ](https://github.com/donnemartin/system-design-primer#caching-at-the-database-query-level)
+    * [オブジェクトレベルでのキャッシュ](https://github.com/donnemartin/system-design-primer#caching-at-the-object-level)
+* いつキャッシュを更新するか
+    * [キャッシュアサイド](https://github.com/donnemartin/system-design-primer#cache-aside)
+    * [ライトスルー](https://github.com/donnemartin/system-design-primer#write-through)
+    * [ライトビハインド（ライトバック）](https://github.com/donnemartin/system-design-primer#write-behind-write-back)
+    * [リフレッシュアヘッド](https://github.com/donnemartin/system-design-primer#refresh-ahead)
 
-### Asynchronism and microservices
+### 非同期処理とマイクロサービス
 
-* [Message queues](https://github.com/donnemartin/system-design-primer#message-queues)
-* [Task queues](https://github.com/donnemartin/system-design-primer#task-queues)
-* [Back pressure](https://github.com/donnemartin/system-design-primer#back-pressure)
-* [Microservices](https://github.com/donnemartin/system-design-primer#microservices)
+* [メッセージキュー](https://github.com/donnemartin/system-design-primer#message-queues)
+* [タスクキュー](https://github.com/donnemartin/system-design-primer#task-queues)
+* [バックプレッシャー](https://github.com/donnemartin/system-design-primer#back-pressure)
+* [マイクロサービス](https://github.com/donnemartin/system-design-primer#microservices)
 
-### Communications
+### 通信
 
-* Discuss tradeoffs:
-    * External communication with clients - [HTTP APIs following REST](https://github.com/donnemartin/system-design-primer#representational-state-transfer-rest)
-    * Internal communications - [RPC](https://github.com/donnemartin/system-design-primer#remote-procedure-call-rpc)
-* [Service discovery](https://github.com/donnemartin/system-design-primer#service-discovery)
+* トレードオフを議論する:
+    * クライアントとの外部通信 - [RESTに従ったHTTP API](https://github.com/donnemartin/system-design-primer#representational-state-transfer-rest)
+    * 内部通信 - [RPC](https://github.com/donnemartin/system-design-primer#remote-procedure-call-rpc)
+* [サービスディスカバリー](https://github.com/donnemartin/system-design-primer#service-discovery)
 
-### Security
+### セキュリティ
 
-Refer to the [security section](https://github.com/donnemartin/system-design-primer#security).
+[セキュリティセクション](https://github.com/donnemartin/system-design-primer#security)を参照してください。
 
-### Latency numbers
+### レイテンシ数値
 
-See [Latency numbers every programmer should know](https://github.com/donnemartin/system-design-primer#latency-numbers-every-programmer-should-know).
+[プログラマーが知っておくべきレイテンシ数値](https://github.com/donnemartin/system-design-primer#latency-numbers-every-programmer-should-know)を参照してください。
 
-### Ongoing
+### 継続的な取り組み
 
-* Continue benchmarking and monitoring your system to address bottlenecks as they come up
-* Scaling is an iterative process
+* ボトルネックに対処するためにシステムのベンチマークと監視を続ける
+* スケーリングは反復的なプロセスです
